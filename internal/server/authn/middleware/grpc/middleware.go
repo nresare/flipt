@@ -154,6 +154,41 @@ func JWTInterceptorSelector() selector.Matcher {
 	})
 }
 
+func jwtClaimsToMetadata(jwtClaims map[string]interface{}) map[string]string {
+	metadata := map[string]string{}
+
+	for k, v := range jwtClaims {
+		if strings.HasPrefix(k, "io.flipt.auth") {
+			metadata[k] = fmt.Sprintf("%v", v)
+			continue
+		}
+
+		if v, ok := v.(string); ok && k == "iss" {
+			metadata["io.flipt.auth.jwt.issuer"] = v
+			continue
+		}
+
+		if k == "user" {
+			userClaims, ok := v.(map[string]interface{})
+			if ok {
+				for _, fields := range [][2]string{
+					{"email", "email"},
+					{"sub", "sub"},
+					{"image", "picture"},
+					{"name", "name"},
+					{"role", "role"},
+				} {
+					if v, ok := userClaims[fields[0]]; ok {
+						metadata[fmt.Sprintf("io.flipt.auth.jwt.%s", fields[1])] = fmt.Sprintf("%v", v)
+					}
+				}
+			}
+		}
+	}
+
+	return metadata
+}
+
 func JWTAuthenticationInterceptor(logger *zap.Logger, validator jwt.Validator, expected jwt.Expected, o ...containers.Option[InterceptorOptions]) grpc.UnaryServerInterceptor {
 	var opts InterceptorOptions
 	containers.ApplyAll(&opts, o...)
@@ -199,36 +234,7 @@ func JWTAuthenticationInterceptor(logger *zap.Logger, validator jwt.Validator, e
 			return ctx, errUnauthenticated
 		}
 
-		metadata := map[string]string{}
-
-		for k, v := range jwtClaims {
-			if strings.HasPrefix(k, "io.flipt.auth") {
-				metadata[k] = fmt.Sprintf("%v", v)
-				continue
-			}
-
-			if v, ok := v.(string); ok && k == "iss" {
-				metadata["io.flipt.auth.jwt.issuer"] = v
-				continue
-			}
-
-			if k == "user" {
-				userClaims, ok := v.(map[string]interface{})
-				if ok {
-					for _, fields := range [][2]string{
-						{"email", "email"},
-						{"sub", "sub"},
-						{"image", "picture"},
-						{"name", "name"},
-						{"role", "role"},
-					} {
-						if v, ok := userClaims[fields[0]]; ok {
-							metadata[fmt.Sprintf("io.flipt.auth.jwt.%s", fields[1])] = fmt.Sprintf("%v", v)
-						}
-					}
-				}
-			}
-		}
+		metadata := jwtClaimsToMetadata(jwtClaims)
 
 		auth := &authrpc.Authentication{
 			Method:   authrpc.Method_METHOD_JWT,

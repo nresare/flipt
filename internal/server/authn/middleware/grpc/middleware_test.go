@@ -872,3 +872,111 @@ func TestNamespaceMatchingInterceptor(t *testing.T) {
 		})
 	}
 }
+
+func TestJwtClaimsToMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		claims   map[string]interface{}
+		expected map[string]string
+	}{
+		{
+			name:     "empty claims",
+			claims:   map[string]interface{}{},
+			expected: map[string]string{},
+		},
+		{
+			name: "issuer claim",
+			claims: map[string]interface{}{
+				"iss": "flipt.io",
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.issuer": "flipt.io",
+			},
+		},
+		{
+			name: "flipt auth prefixed claims",
+			claims: map[string]interface{}{
+				"io.flipt.auth.role":   "admin",
+				"io.flipt.auth.tenant": "acme",
+			},
+			expected: map[string]string{
+				"io.flipt.auth.role":   "admin",
+				"io.flipt.auth.tenant": "acme",
+			},
+		},
+		{
+			name: "user claims",
+			claims: map[string]interface{}{
+				"user": map[string]interface{}{
+					"email": "user@example.com",
+					"sub":   "12345",
+					"image": "https://example.com/avatar.jpg",
+					"name":  "John Doe",
+					"role":  "user",
+				},
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.email":   "user@example.com",
+				"io.flipt.auth.jwt.sub":     "12345",
+				"io.flipt.auth.jwt.picture": "https://example.com/avatar.jpg",
+				"io.flipt.auth.jwt.name":    "John Doe",
+				"io.flipt.auth.jwt.role":    "user",
+			},
+		},
+		{
+			name: "combined claims",
+			claims: map[string]interface{}{
+				"iss": "flipt.io",
+				"io.flipt.auth.scope": "read",
+				"user": map[string]interface{}{
+					"email": "admin@flipt.io",
+					"name":  "Admin User",
+				},
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.issuer": "flipt.io",
+				"io.flipt.auth.scope":      "read",
+				"io.flipt.auth.jwt.email":  "admin@flipt.io",
+				"io.flipt.auth.jwt.name":   "Admin User",
+			},
+		},
+		{
+			name: "non-string issuer ignored",
+			claims: map[string]interface{}{
+				"iss": 12345,
+			},
+			expected: map[string]string{},
+		},
+		{
+			name: "user claim not a map",
+			claims: map[string]interface{}{
+				"user": "not-a-map",
+			},
+			expected: map[string]string{},
+		},
+		{
+			name: "mixed user claim types",
+			claims: map[string]interface{}{
+				"user": map[string]interface{}{
+					"email":    "test@example.com",
+					"sub":      123,
+					"name":     "Test User",
+					"unknown":  "ignored",
+					"picture":  nil,
+				},
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.email": "test@example.com",
+				"io.flipt.auth.jwt.sub":   "123",
+				"io.flipt.auth.jwt.name":  "Test User",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := jwtClaimsToMetadata(tt.claims)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
