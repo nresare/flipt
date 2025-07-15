@@ -638,6 +638,10 @@ type AuthenticationMethodJWTConfig struct {
 	JWKSURL string `json:"-" mapstructure:"jwks_url" yaml:"jwks_url,omitempty"`
 	// PublicKeyFile is the path to the public PEM encoded key file on disk.
 	PublicKeyFile string `json:"-" mapstructure:"public_key_file" yaml:"public_key_file,omitempty"`
+	// ClaimsMapping is a map of user attribute names to JSON Pointer expressions
+	// that specify how to extract those attributes from the JWT payload.
+	// For example: {"email": "/user/email", "name": "/user/name"}
+	ClaimsMapping map[string]string `json:"claimsMapping,omitempty" mapstructure:"claims_mapping" yaml:"claims_mapping,omitempty"`
 }
 
 func (a AuthenticationMethodJWTConfig) setDefaults(map[string]any) {}

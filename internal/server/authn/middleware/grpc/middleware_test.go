@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"testing"
@@ -279,7 +280,7 @@ func TestJWTAuthenticationInterceptor(t *testing.T) {
 				srv.Server = tt.server
 			}
 
-			_, err = JWTAuthenticationInterceptor(logger, *validator, tt.expectedJWT)(
+			_, err = JWTAuthenticationInterceptor(logger, *validator, tt.expectedJWT, nil)(
 				ctx,
 				nil,
 				srv,
@@ -323,7 +324,7 @@ func TestJWTAuthenticationInterceptor(t *testing.T) {
 				srv.Server = tt.server
 			}
 
-			_, err = JWTAuthenticationInterceptor(logger, *validator, tt.expectedJWT)(
+			_, err = JWTAuthenticationInterceptor(logger, *validator, tt.expectedJWT, nil)(
 				ctx,
 				nil,
 				srv,
@@ -975,7 +976,134 @@ func TestJwtClaimsToMetadata(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := jwtClaimsToMetadata(tt.claims)
+			result := jwtClaimsToMetadata(tt.claims, nil)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestJwtClaimsToMetadataWithClaimsMapping(t *testing.T) {
+	tests := []struct {
+		name          string
+		claimsJSON    string
+		claimsMapping map[string]string
+		expected      map[string]string
+	}{
+		{
+			name:          "empty claims mapping uses defaults",
+			claimsJSON:    `{"user": {"email": "test@example.com"}}`,
+			claimsMapping: map[string]string{},
+			expected:      map[string]string{"io.flipt.auth.jwt.email": "test@example.com"},
+		},
+		{
+			name: "simple JSON pointer mapping",
+			claimsJSON: `{
+				"user": {
+					"email": "user@example.com",
+					"name": "John Doe"
+				}
+			}`,
+			claimsMapping: map[string]string{
+				"email": "/user/email",
+				"name":  "/user/name",
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.email": "user@example.com",
+				"io.flipt.auth.jwt.name":  "John Doe",
+			},
+		},
+		{
+			name: "nested JSON pointer mapping",
+			claimsJSON: `{
+				"profile": {
+					"personal": {
+						"email": "deep@example.com"
+					}
+				},
+				"sub": "123456"
+			}`,
+			claimsMapping: map[string]string{
+				"email": "/profile/personal/email",
+				"sub":   "/sub",
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.email": "deep@example.com",
+				"io.flipt.auth.jwt.sub":   "123456",
+			},
+		},
+		{
+			name: "invalid JSON pointer ignored",
+			claimsJSON: `{
+				"user": {
+					"email": "valid@example.com"
+				}
+			}`,
+			claimsMapping: map[string]string{
+				"email": "/user/email",
+				"name":  "/user/nonexistent",
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.email": "valid@example.com",
+			},
+		},
+		{
+			name: "preserve flipt auth prefixed claims",
+			claimsJSON: `{
+				"io.flipt.auth.role": "admin",
+				"user": {
+					"email": "admin@example.com"
+				}
+			}`,
+			claimsMapping: map[string]string{
+				"email": "/user/email",
+			},
+			expected: map[string]string{
+				"io.flipt.auth.role":      "admin",
+				"io.flipt.auth.jwt.email": "admin@example.com",
+			},
+		},
+		{
+			name: "preserve issuer claim",
+			claimsJSON: `{
+				"iss": "flipt.io",
+				"user": {
+					"email": "user@flipt.io"
+				}
+			}`,
+			claimsMapping: map[string]string{
+				"email": "/user/email",
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.issuer": "flipt.io",
+				"io.flipt.auth.jwt.email":  "user@flipt.io",
+			},
+		},
+		{
+			name: "custom mapping merged with defaults",
+			claimsJSON: `{
+				"user": {
+					"email": "user@example.com",
+					"name": "John Doe"
+				},
+				"name": "Custom Name"
+			}`,
+			claimsMapping: map[string]string{
+				"name": "/name", // Override default path for name
+			},
+			expected: map[string]string{
+				"io.flipt.auth.jwt.email": "user@example.com", // From default path
+				"io.flipt.auth.jwt.name":  "Custom Name",       // From custom path
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var claims map[string]interface{}
+			err := json.Unmarshal([]byte(tt.claimsJSON), &claims)
+			require.NoError(t, err)
+			
+			result := jwtClaimsToMetadata(claims, tt.claimsMapping)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

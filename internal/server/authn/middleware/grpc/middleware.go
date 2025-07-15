@@ -12,6 +12,7 @@ import (
 
 	errs "errors"
 
+	"github.com/go-openapi/jsonpointer"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/selector"
 	"github.com/hashicorp/cap/jwt"
@@ -154,9 +155,10 @@ func JWTInterceptorSelector() selector.Matcher {
 	})
 }
 
-func jwtClaimsToMetadata(jwtClaims map[string]interface{}) map[string]string {
+func jwtClaimsToMetadata(jwtClaims map[string]interface{}, claimsMapping map[string]string) map[string]string {
 	metadata := map[string]string{}
 
+	// First, preserve existing behavior for any claims with io.flipt.auth prefix
 	for k, v := range jwtClaims {
 		if strings.HasPrefix(k, "io.flipt.auth") {
 			metadata[k] = fmt.Sprintf("%v", v)
@@ -167,29 +169,49 @@ func jwtClaimsToMetadata(jwtClaims map[string]interface{}) map[string]string {
 			metadata["io.flipt.auth.jwt.issuer"] = v
 			continue
 		}
+	}
 
-		if k == "user" {
-			userClaims, ok := v.(map[string]interface{})
-			if ok {
-				for _, fields := range [][2]string{
-					{"email", "email"},
-					{"sub", "sub"},
-					{"image", "picture"},
-					{"name", "name"},
-					{"role", "role"},
-				} {
-					if v, ok := userClaims[fields[0]]; ok {
-						metadata[fmt.Sprintf("io.flipt.auth.jwt.%s", fields[1])] = fmt.Sprintf("%v", v)
-					}
-				}
-			}
+	// Create a merged mapping that includes default paths plus custom mappings
+	defaultMappings := map[string]string{
+		"email":   "/user/email",
+		"sub":     "/user/sub", 
+		"picture": "/user/image",
+		"name":    "/user/name",
+		"role":    "/user/role",
+	}
+	
+	// Start with defaults and overlay custom mappings
+	effectiveMappings := make(map[string]string)
+	for k, v := range defaultMappings {
+		effectiveMappings[k] = v
+	}
+	for k, v := range claimsMapping {
+		effectiveMappings[k] = v
+	}
+	
+	// Extract user attributes using the effective mappings
+	for attribute, jsonPointerExpr := range effectiveMappings {
+		if jsonPointerExpr == "" {
+			continue
 		}
+		
+		ptr, err := jsonpointer.New(jsonPointerExpr)
+		if err != nil {
+			continue // Skip invalid JSON pointer expressions
+		}
+		
+		value, _, err := ptr.Get(jwtClaims)
+		if err != nil {
+			continue // Skip if the pointer doesn't resolve
+		}
+		
+		metadata[fmt.Sprintf("io.flipt.auth.jwt.%s", attribute)] = fmt.Sprintf("%v", value)
 	}
 
 	return metadata
 }
 
-func JWTAuthenticationInterceptor(logger *zap.Logger, validator jwt.Validator, expected jwt.Expected, o ...containers.Option[InterceptorOptions]) grpc.UnaryServerInterceptor {
+func JWTAuthenticationInterceptor(logger *zap.Logger, validator jwt.Validator, expected jwt.Expected, claimsMapping map[string]string, o ...containers.Option[InterceptorOptions]) grpc.UnaryServerInterceptor {
 	var opts InterceptorOptions
 	containers.ApplyAll(&opts, o...)
 
@@ -234,7 +256,7 @@ func JWTAuthenticationInterceptor(logger *zap.Logger, validator jwt.Validator, e
 			return ctx, errUnauthenticated
 		}
 
-		metadata := jwtClaimsToMetadata(jwtClaims)
+		metadata := jwtClaimsToMetadata(jwtClaims, claimsMapping)
 
 		auth := &authrpc.Authentication{
 			Method:   authrpc.Method_METHOD_JWT,

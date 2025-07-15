@@ -241,7 +241,7 @@ func authenticationGRPC(
 				exp.Audiences = authJWT.Method.ValidateClaims.Audiences
 			}
 
-			interceptors = append(interceptors, selector.UnaryServerInterceptor(authmiddlewaregrpc.JWTAuthenticationInterceptor(logger, *validator, exp, authOpts...), authmiddlewaregrpc.JWTInterceptorSelector()))
+			interceptors = append(interceptors, selector.UnaryServerInterceptor(authmiddlewaregrpc.JWTAuthenticationInterceptor(logger, *validator, exp, authJWT.Method.ClaimsMapping, authOpts...), authmiddlewaregrpc.JWTInterceptorSelector()))
 		}
 
 		interceptors = append(interceptors, selector.UnaryServerInterceptor(authmiddlewaregrpc.ClientTokenAuthenticationInterceptor(
