@@ -667,6 +667,11 @@ func TestLoad(t *testing.T) {
 			wantErr: errors.New(`field "public_key_file": stat testdata/authentication/jwt_key_file.pem: no such file or directory`),
 		},
 		{
+			name:    "authentication jwt invalid claims mapping",
+			path:    "./testdata/authentication/jwt_invalid_claims_mapping.yml",
+			wantErr: errors.New(`field "claims_mapping": invalid claim key 'department': only 'email', 'sub', 'picture', 'name', and 'role' are allowed`),
+		},
+		{
 			name:    "authorization required without authentication",
 			path:    "./testdata/authorization/authentication_not_required.yml",
 			wantErr: errors.New("authorization requires authentication also be required"),

@@ -1,0 +1,9 @@
+authentication:
+  required: true
+  methods:
+    jwt:
+      enabled: true
+      jwks_url: "https://example.com/.well-known/jwks.json"
+      claims_mapping:
+        email: "/user/email"
+        department: "/user/dept"  # Invalid - not in allowed list

@@ -679,6 +679,21 @@ func (a AuthenticationMethodJWTConfig) validate() error {
 		}
 	}
 
+	// Validate claims_mapping keys - only allow predefined fields
+	validClaimKeys := map[string]bool{
+		"email":   true,
+		"sub":     true,
+		"picture": true,
+		"name":    true,
+		"role":    true,
+	}
+
+	for key := range a.ClaimsMapping {
+		if !validClaimKeys[key] {
+			return errFieldWrap("claims_mapping", fmt.Errorf("invalid claim key '%s': only 'email', 'sub', 'picture', 'name', and 'role' are allowed", key))
+		}
+	}
+
 	return nil
 }
 
