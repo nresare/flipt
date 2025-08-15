@@ -294,6 +294,7 @@ type AuthenticationMethodsConfig struct {
 	OIDC       AuthenticationMethod[AuthenticationMethodOIDCConfig]       `json:"oidc,omitempty" mapstructure:"oidc" yaml:"oidc,omitempty"`
 	Kubernetes AuthenticationMethod[AuthenticationMethodKubernetesConfig] `json:"kubernetes,omitempty" mapstructure:"kubernetes" yaml:"kubernetes,omitempty"`
 	JWT        AuthenticationMethod[AuthenticationMethodJWTConfig]        `json:"jwt,omitempty" mapstructure:"jwt" yaml:"jwt,omitempty"`
+	AWS        AuthenticationMethod[AuthenticationMethodAWSConfig]        `json:"aws,omitempty" mapstructure:"aws" yaml:"aws,omitempty"`
 }
 
 // AllMethods returns all the AuthenticationMethod instances available.
@@ -304,6 +305,7 @@ func (a *AuthenticationMethodsConfig) AllMethods(ctx context.Context) []StaticAu
 		a.OIDC.info(ctx),
 		a.Kubernetes.info(ctx),
 		a.JWT.info(ctx),
+		a.AWS.info(ctx),
 	}
 }
 
@@ -417,6 +419,7 @@ var (
 	_ validator = (*AuthenticationMethodKubernetesConfig)(nil)
 	_ validator = (*AuthenticationMethodGithubConfig)(nil)
 	_ validator = (*AuthenticationMethodJWTConfig)(nil)
+	_ validator = (*AuthenticationMethodAWSConfig)(nil)
 )
 
 // AuthenticationMethodTokenConfig contains fields used to configure the authentication
@@ -721,6 +724,32 @@ func (a AuthenticationMethodJWTConfig) validate() error {
 		if !slices.Contains(validClaimKeys, key) {
 			return errFieldWrap("authentication", "claims_mapping", fmt.Errorf("invalid claim key '%s'", key))
 		}
+	}
+
+	return nil
+}
+
+type AuthenticationMethodAWSConfig struct {
+	// Audiences is the list of expected audiences for token validation (required)
+	// Client tokens must specify one of these audiences to be accepted
+	Audiences []string `json:"audiences,omitempty" mapstructure:"audiences" yaml:"audiences,omitempty"`
+}
+
+func (a AuthenticationMethodAWSConfig) setDefaults(defaults map[string]any) {
+	// No defaults needed for AWS method
+}
+
+// info describes properties of the authentication method "aws".
+func (a AuthenticationMethodAWSConfig) info(_ context.Context) AuthenticationMethodInfo {
+	return AuthenticationMethodInfo{
+		Method:            auth.Method_METHOD_AWS,
+		SessionCompatible: false,
+	}
+}
+
+func (a AuthenticationMethodAWSConfig) validate() error {
+	if len(a.Audiences) == 0 {
+		return errFieldRequired("authentication", "audiences")
 	}
 
 	return nil

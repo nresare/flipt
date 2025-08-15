@@ -1,0 +1,57 @@
+# Example Flipt configuration with AWS authentication enabled
+#
+# This configuration shows how to enable AWS federated identity authentication.
+# Clients can authenticate using AWS SigV4-signed tokens.
+
+log:
+  level: INFO
+
+db:
+  url: file:./flipt.db
+
+ui:
+  enabled: true
+
+server:
+  http_port: 8080
+  grpc_port: 9000
+
+authentication:
+  # Authentication is required for all API endpoints
+  required: true
+  
+  # Session configuration for browser-based authentication methods
+  session:
+    domain: "localhost"
+    secure: false  # Set to true in production with HTTPS
+    
+  methods:
+    # AWS federated identity authentication
+    aws:
+      enabled: true
+      # Required: list of audiences that clients can specify in their tokens
+      # Client tokens must contain one of these audiences in the x-goog-cloud-target-resource header
+      # Note: The AWS region is automatically extracted from the client's token
+      audiences:
+        - "example.com"
+        - "api.example.com"
+      
+    # You can enable multiple authentication methods
+    token:
+      enabled: true
+      storage:
+        type: "static"
+        tokens:
+          admin_token:
+            credential: "your-secret-token-here"
+            metadata:
+              name: "admin"
+              role: "admin"
+
+# Optional: exclude evaluation endpoints from authentication
+# This is useful if you want to allow unauthenticated flag evaluation
+# but require authentication for management operations
+# authentication:
+#   exclude:
+#     evaluation: true  # Allow unauthenticated /evaluation/* endpoints
+#     ofrep: true      # Allow unauthenticated /ofrep/* endpoints

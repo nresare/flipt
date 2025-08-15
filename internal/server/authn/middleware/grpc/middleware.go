@@ -40,6 +40,7 @@ const (
 	_ authenticationScheme = iota
 	authenticationSchemeBearer
 	authenticationSchemeJWT
+	authenticationSchemeAWS
 )
 
 func (a authenticationScheme) String() string {
@@ -48,6 +49,8 @@ func (a authenticationScheme) String() string {
 		return "Bearer"
 	case authenticationSchemeJWT:
 		return "JWT"
+	case authenticationSchemeAWS:
+		return "aws-fed-id"
 	default:
 		return ""
 	}
@@ -515,6 +518,126 @@ func fromAuthorization(auth string, scheme authenticationScheme) (string, error)
 	// Ensure auth is prefixed with the scheme
 	if a, ok := strings.CutPrefix(auth, scheme.String()+" "); ok {
 		return a, nil
+	}
+
+	return "", errUnauthenticated
+}
+
+// AWSValidator is the interface for validating AWS federated identity tokens
+type AWSValidator interface {
+	Validate(ctx context.Context, token string) (map[string]string, error)
+}
+
+// AWSInterceptorSelector is a selector.Matcher which selects requests
+// which contain an AWS token in the authorization header.
+func AWSInterceptorSelector() selector.Matcher {
+	return selector.MatchFunc(func(ctx context.Context, _ interceptors.CallMeta) bool {
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return false
+		}
+
+		_, err := awsTokenFromMetadata(md)
+		return err == nil
+	})
+}
+
+// AWSAuthenticationUnaryInterceptor is a grpc.UnaryServerInterceptor which extracts an AWS token found
+// within the authorization field on the incoming requests metadata.
+func AWSAuthenticationUnaryInterceptor(logger *zap.Logger, validator AWSValidator, o ...containers.Option[InterceptorOptions]) grpc.UnaryServerInterceptor {
+	var opts InterceptorOptions
+	containers.ApplyAll(&opts, o...)
+
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		// skip auth for any preconfigured servers
+		if skipped(ctx, info.Server, opts) {
+			logger.Debug("skipping authentication for server", zap.String("method", info.FullMethod))
+			return handler(ctx, req)
+		}
+
+		ctx, err := authenticateAWS(ctx, logger, validator)
+		if err != nil {
+			return nil, err
+		}
+
+		return handler(ctx, req)
+	}
+}
+
+// AWSAuthenticationStreamInterceptor is a grpc.StreamServerInterceptor which extracts an AWS token found
+// within the authorization field on the incoming requests metadata.
+func AWSAuthenticationStreamInterceptor(logger *zap.Logger, validator AWSValidator, o ...containers.Option[InterceptorOptions]) grpc.StreamServerInterceptor {
+	var opts InterceptorOptions
+	containers.ApplyAll(&opts, o...)
+
+	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		ctx := stream.Context()
+		// skip auth for any preconfigured servers
+		if skipped(ctx, srv, opts) {
+			logger.Debug("skipping authentication for server", zap.String("method", info.FullMethod))
+			return handler(srv, stream)
+		}
+
+		ctx, err := authenticateAWS(ctx, logger, validator)
+		if err != nil {
+			return err
+		}
+
+		// wrappedServerStream is a helper that allows modifying the context of the server stream
+		return handler(srv, &grpcmiddleware.WrappedServerStream{
+			ServerStream:   stream,
+			WrappedContext: ctx,
+		})
+	}
+}
+
+// authenticateAWS authenticates an AWS token found in the incoming request metadata and returns a new context with the authenticated authentication instance.
+func authenticateAWS(ctx context.Context, logger *zap.Logger, validator AWSValidator) (context.Context, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		logger.Error("unauthenticated", zap.String("reason", "metadata not found on context"))
+		return ctx, errUnauthenticated
+	}
+
+	token, err := awsTokenFromMetadata(md)
+	if err != nil {
+		logger.Error("unauthenticated",
+			zap.String("reason", "no AWS authorization provided"),
+			zap.Error(err))
+
+		return ctx, errUnauthenticated
+	}
+
+	awsMetadata, err := validator.Validate(ctx, token)
+	if err != nil {
+		logger.Error("unauthenticated",
+			zap.String("reason", "error validating AWS token"),
+			zap.Error(err))
+
+		if errs.Is(err, context.Canceled) {
+			err = status.Error(codes.Canceled, err.Error())
+			return ctx, err
+		}
+
+		if errs.Is(err, context.DeadlineExceeded) {
+			err = status.Error(codes.DeadlineExceeded, err.Error())
+			return ctx, err
+		}
+
+		return ctx, errUnauthenticated
+	}
+
+	return ContextWithAuthentication(ctx, &authrpc.Authentication{
+		Method:   authrpc.Method_METHOD_AWS,
+		Metadata: awsMetadata,
+	}), nil
+}
+
+// awsTokenFromMetadata extracts an AWS token found in the incoming request metadata
+// and returns the AWS token.
+func awsTokenFromMetadata(md metadata.MD) (string, error) {
+	if authenticationHeader := md.Get(authenticationHeaderKey); len(authenticationHeader) > 0 {
+		return fromAuthorization(authenticationHeader[0], authenticationSchemeAWS)
 	}
 
 	return "", errUnauthenticated

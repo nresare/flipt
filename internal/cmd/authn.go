@@ -18,6 +18,7 @@ import (
 	"go.flipt.io/flipt/internal/gateway"
 	"go.flipt.io/flipt/internal/server/authn"
 	"go.flipt.io/flipt/internal/server/authn/method"
+	authaws "go.flipt.io/flipt/internal/server/authn/method/aws"
 	authgithub "go.flipt.io/flipt/internal/server/authn/method/github"
 	authjwt "go.flipt.io/flipt/internal/server/authn/method/jwt"
 	authkubernetes "go.flipt.io/flipt/internal/server/authn/method/kubernetes"
@@ -189,6 +190,20 @@ func authenticationGRPC(
 		jwtValidator = authjwt.NewValidator(validator, exp)
 	}
 
+	var awsValidator *authaws.Validator
+
+	// Set up AWS validator if AWS auth is enabled
+	if authCfg.Methods.AWS.Enabled {
+		authAWS := authCfg.Methods.AWS
+		awsValidator, err = authaws.NewValidator(logger, authAWS.Method.Audiences)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to create AWS validator: %w", err)
+		}
+
+		logger.Debug("AWS authentication method configured",
+			zap.Strings("audiences", authAWS.Method.Audiences))
+	}
+
 	// only enable enforcement middleware if authentication required
 	if authCfg.Required {
 		// Register JWT validation middleware if either JWT or Kubernetes auth is enabled
@@ -197,6 +212,13 @@ func authenticationGRPC(
 			unaryInterceptors = append(unaryInterceptors, selector.UnaryServerInterceptor(authmiddlewaregrpc.JWTAuthenticationUnaryInterceptor(logger, jwtValidator, authJWT.Method.ClaimsMapping, authOpts...), authmiddlewaregrpc.JWTInterceptorSelector()))
 
 			streamInterceptors = append(streamInterceptors, selector.StreamServerInterceptor(authmiddlewaregrpc.JWTAuthenticationStreamInterceptor(logger, jwtValidator, authJWT.Method.ClaimsMapping, authOpts...), authmiddlewaregrpc.JWTInterceptorSelector()))
+		}
+
+		// Register AWS validation middleware if AWS auth is enabled
+		if authCfg.Methods.AWS.Enabled {
+			unaryInterceptors = append(unaryInterceptors, selector.UnaryServerInterceptor(authmiddlewaregrpc.AWSAuthenticationUnaryInterceptor(logger, awsValidator, authOpts...), authmiddlewaregrpc.AWSInterceptorSelector()))
+
+			streamInterceptors = append(streamInterceptors, selector.StreamServerInterceptor(authmiddlewaregrpc.AWSAuthenticationStreamInterceptor(logger, awsValidator, authOpts...), authmiddlewaregrpc.AWSInterceptorSelector()))
 		}
 
 		unaryInterceptors = append(unaryInterceptors, selector.UnaryServerInterceptor(authmiddlewaregrpc.ClientTokenAuthenticationUnaryInterceptor(

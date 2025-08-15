@@ -158,6 +158,7 @@ paths:
                         - METHOD_KUBERNETES
                         - METHOD_GITHUB
                         - METHOD_JWT
+                        - METHOD_AWS
                     type: string
                     format: enum
                 - name: limit
@@ -321,6 +322,7 @@ components:
                         - METHOD_KUBERNETES
                         - METHOD_GITHUB
                         - METHOD_JWT
+                        - METHOD_AWS
                     type: string
                     format: enum
                 expiresAt:
