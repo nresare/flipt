@@ -34,10 +34,7 @@ type Header struct {
 
 // AWSValidationResult contains the result of AWS token validation
 type AWSValidationResult struct {
-	ARN       string
-	AccountID string
-	UserID    string
-	Region    string
+	ARN string
 }
 
 // NewValidator creates a new AWS token validator
@@ -64,11 +61,9 @@ func (v *Validator) Validate(ctx context.Context, tokenData string) (map[string]
 		return nil, fmt.Errorf("failed to parse AWS token JSON: %w", err)
 	}
 
-	// Validate the audience if configured
-	if len(v.audiences) > 0 {
-		if err := v.validateAudience(&awsTokenData); err != nil {
-			return nil, fmt.Errorf("audience validation failed: %w", err)
-		}
+	// Validate the audience (required)
+	if err := v.validateAudience(&awsTokenData); err != nil {
+		return nil, fmt.Errorf("audience validation failed: %w", err)
 	}
 
 	// Extract region from the token URL
@@ -85,22 +80,11 @@ func (v *Validator) Validate(ctx context.Context, tokenData string) (map[string]
 
 	// Convert result to metadata map
 	metadata := map[string]string{
-		"io.flipt.auth.aws.arn":    result.ARN,
-		"io.flipt.auth.aws.region": result.Region,
-	}
-
-	if result.AccountID != "" {
-		metadata["io.flipt.auth.aws.account_id"] = result.AccountID
-	}
-
-	if result.UserID != "" {
-		metadata["io.flipt.auth.aws.user_id"] = result.UserID
+		"io.flipt.auth.aws.arn": result.ARN,
 	}
 
 	v.logger.Debug("AWS token validation successful", 
-		zap.String("arn", result.ARN),
-		zap.String("account_id", result.AccountID),
-		zap.String("region", result.Region))
+		zap.String("arn", result.ARN))
 
 	return metadata, nil
 }
@@ -184,16 +168,7 @@ func (v *Validator) validateWithAWS(ctx context.Context, tokenData *AWSTokenData
 	}
 
 	result := &AWSValidationResult{
-		ARN:    aws.ToString(output.Arn),
-		Region: region,
-	}
-
-	if output.Account != nil {
-		result.AccountID = aws.ToString(output.Account)
-	}
-
-	if output.UserId != nil {
-		result.UserID = aws.ToString(output.UserId)
+		ARN: aws.ToString(output.Arn),
 	}
 
 	return result, nil
