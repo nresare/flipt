@@ -3,13 +3,13 @@ package aws
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"go.uber.org/zap"
 )
 
@@ -35,6 +35,19 @@ type Header struct {
 // AWSValidationResult contains the result of AWS token validation
 type AWSValidationResult struct {
 	ARN string
+}
+
+// STSGetCallerIdentityResponse represents the XML response from AWS STS GetCallerIdentity
+type STSGetCallerIdentityResponse struct {
+	XMLName xml.Name                      `xml:"GetCallerIdentityResponse"`
+	Result  STSGetCallerIdentityResult    `xml:"GetCallerIdentityResult"`
+}
+
+// STSGetCallerIdentityResult contains the result data from GetCallerIdentity
+type STSGetCallerIdentityResult struct {
+	ARN     string `xml:"Arn"`
+	UserID  string `xml:"UserId"`
+	Account string `xml:"Account"`
 }
 
 // NewValidator creates a new AWS token validator
@@ -66,14 +79,8 @@ func (v *Validator) Validate(ctx context.Context, tokenData string) (map[string]
 		return nil, fmt.Errorf("audience validation failed: %w", err)
 	}
 
-	// Extract region from the token URL
-	region, err := v.extractRegionFromToken(&awsTokenData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract region from token: %w", err)
-	}
-
 	// Validate the token by making the actual AWS STS call
-	result, err := v.validateWithAWS(ctx, &awsTokenData, region)
+	result, err := v.validateWithAWS(ctx, &awsTokenData)
 	if err != nil {
 		return nil, fmt.Errorf("AWS STS validation failed: %w", err)
 	}
@@ -114,62 +121,94 @@ func (v *Validator) validateAudience(tokenData *AWSTokenData) error {
 		tokenAudience, v.audiences)
 }
 
-// extractRegionFromToken extracts the AWS region from the STS URL in the token
-func (v *Validator) extractRegionFromToken(tokenData *AWSTokenData) (string, error) {
-	parsedURL, err := url.Parse(tokenData.URL)
+
+// validateWithAWS validates the token by making the exact signed AWS STS request
+func (v *Validator) validateWithAWS(ctx context.Context, tokenData *AWSTokenData) (*AWSValidationResult, error) {
+	// Validate the STS URL format
+	if err := v.validateSTSURL(tokenData.URL); err != nil {
+		return nil, fmt.Errorf("invalid STS URL: %w", err)
+	}
+
+	// Create HTTP request using the client's signed request data
+	req, err := http.NewRequestWithContext(ctx, tokenData.Method, tokenData.URL, nil)
 	if err != nil {
-		return "", fmt.Errorf("invalid STS URL in token: %w", err)
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
-	// AWS STS URLs follow the pattern: https://sts.<region>.amazonaws.com/
-	// or https://sts.amazonaws.com/ for us-east-1 (default)
-	host := parsedURL.Host
-	if host == "sts.amazonaws.com" {
-		return "us-east-1", nil
+	// Add all headers from the signed token
+	for _, header := range tokenData.Headers {
+		req.Header.Set(header.Key, header.Value)
 	}
 
-	// Extract region from sts.<region>.amazonaws.com
-	if !strings.HasPrefix(host, "sts.") || !strings.HasSuffix(host, ".amazonaws.com") {
-		return "", fmt.Errorf("invalid AWS STS hostname: %s", host)
-	}
-
-	// Remove "sts." prefix and ".amazonaws.com" suffix
-	region := strings.TrimPrefix(host, "sts.")
-	region = strings.TrimSuffix(region, ".amazonaws.com")
-	
-	if region == "" {
-		return "", fmt.Errorf("could not extract region from STS hostname: %s", host)
-	}
-
-	return region, nil
-}
-
-// validateWithAWS validates the token by making the actual AWS STS GetCallerIdentity call
-func (v *Validator) validateWithAWS(ctx context.Context, tokenData *AWSTokenData, region string) (*AWSValidationResult, error) {
-	// Create region-specific AWS config and STS client
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	// Make the HTTP request
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config for region %s: %w", region, err)
+		return nil, fmt.Errorf("failed to make AWS STS request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for HTTP errors
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("AWS STS request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	stsClient := sts.NewFromConfig(cfg)
-
-	// For now, we use a simpler approach by calling GetCallerIdentity directly
-	// with the STS client configured for the token's region.
-	// TODO: In the future, we could replicate the exact signed request from tokenData
-	// to validate that the client actually has the credentials they claim to have.
-	output, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	// Read and parse the XML response
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to call AWS STS GetCallerIdentity: %w", err)
+		return nil, fmt.Errorf("failed to read AWS STS response: %w", err)
 	}
 
-	if output.Arn == nil {
+	var stsResponse STSGetCallerIdentityResponse
+	if err := xml.Unmarshal(respBody, &stsResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse AWS STS XML response: %w", err)
+	}
+
+	// Validate that we have an ARN
+	if stsResponse.Result.ARN == "" {
 		return nil, fmt.Errorf("AWS STS response missing ARN")
 	}
 
 	result := &AWSValidationResult{
-		ARN: aws.ToString(output.Arn),
+		ARN: stsResponse.Result.ARN,
 	}
 
 	return result, nil
+}
+
+// validateSTSURL validates that the URL is a valid AWS STS endpoint
+func (v *Validator) validateSTSURL(urlStr string) error {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Must be HTTPS
+	if parsedURL.Scheme != "https" {
+		return fmt.Errorf("STS URL must use HTTPS, got: %s", parsedURL.Scheme)
+	}
+
+	host := parsedURL.Host
+	
+	// Check for global endpoint
+	if host == "sts.amazonaws.com" {
+		return nil
+	}
+
+	// Check for regional endpoint: sts.{region}.amazonaws.com
+	if !strings.HasPrefix(host, "sts.") || !strings.HasSuffix(host, ".amazonaws.com") {
+		return fmt.Errorf("invalid AWS STS hostname: %s", host)
+	}
+
+	// Extract region from sts.{region}.amazonaws.com
+	region := strings.TrimPrefix(host, "sts.")
+	region = strings.TrimSuffix(region, ".amazonaws.com")
+	
+	// Validate region format (no dots allowed for security)
+	if region == "" || strings.Contains(region, ".") {
+		return fmt.Errorf("invalid AWS region in hostname: %s", region)
+	}
+
+	return nil
 }

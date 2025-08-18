@@ -224,67 +224,80 @@ func TestNewValidator(t *testing.T) {
 	}
 }
 
-func TestValidator_ExtractRegionFromToken(t *testing.T) {
+func TestValidator_ValidateSTSURL(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	validator, err := NewValidator(logger, []string{"test-audience"})
 	require.NoError(t, err)
 
 	tests := []struct {
-		name           string
-		tokenURL       string
-		expectedRegion string
-		wantErr        bool
+		name     string
+		tokenURL string
+		wantErr  bool
+		errMsg   string
 	}{
 		{
-			name:           "us-east-1 default format",
-			tokenURL:       "https://sts.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
-			expectedRegion: "us-east-1",
-			wantErr:        false,
+			name:     "global endpoint",
+			tokenURL: "https://sts.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
+			wantErr:  false,
 		},
 		{
-			name:           "us-west-2 regional format",
-			tokenURL:       "https://sts.us-west-2.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
-			expectedRegion: "us-west-2",
-			wantErr:        false,
+			name:     "us-west-2 regional endpoint",
+			tokenURL: "https://sts.us-west-2.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
+			wantErr:  false,
 		},
 		{
-			name:           "eu-west-1 regional format",
-			tokenURL:       "https://sts.eu-west-1.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
-			expectedRegion: "eu-west-1",
-			wantErr:        false,
+			name:     "eu-west-1 regional endpoint",
+			tokenURL: "https://sts.eu-west-1.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
+			wantErr:  false,
 		},
 		{
-			name:           "invalid URL",
-			tokenURL:       "not-a-url",
-			expectedRegion: "",
-			wantErr:        true,
+			name:     "invalid URL",
+			tokenURL: "not-a-url",
+			wantErr:  true,
+			errMsg:   "must use HTTPS",
 		},
 		{
-			name:           "non-STS hostname",
-			tokenURL:       "https://ec2.us-east-1.amazonaws.com/",
-			expectedRegion: "",
-			wantErr:        true,
+			name:     "HTTP not HTTPS",
+			tokenURL: "http://sts.amazonaws.com/",
+			wantErr:  true,
+			errMsg:   "must use HTTPS",
 		},
 		{
-			name:           "non-AWS hostname",
-			tokenURL:       "https://example.com/",
-			expectedRegion: "",
-			wantErr:        true,
+			name:     "non-STS hostname",
+			tokenURL: "https://ec2.us-east-1.amazonaws.com/",
+			wantErr:  true,
+			errMsg:   "invalid AWS STS hostname",
+		},
+		{
+			name:     "non-AWS hostname",
+			tokenURL: "https://example.com/",
+			wantErr:  true,
+			errMsg:   "invalid AWS STS hostname",
+		},
+		{
+			name:     "malicious region with dots",
+			tokenURL: "https://sts.us-west-2.evil.amazonaws.com/",
+			wantErr:  true,
+			errMsg:   "invalid AWS region",
+		},
+		{
+			name:     "empty region",
+			tokenURL: "https://sts..amazonaws.com/",
+			wantErr:  true,
+			errMsg:   "invalid AWS region",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tokenData := &AWSTokenData{
-				URL: tt.tokenURL,
-			}
-			
-			region, err := validator.extractRegionFromToken(tokenData)
+			err := validator.validateSTSURL(tt.tokenURL)
 			if tt.wantErr {
 				assert.Error(t, err)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedRegion, region)
 			}
 		})
 	}
